@@ -47,7 +47,7 @@ app.add_middleware(
 
 # --- GLOBAL PATHS ---
 # --- GLOBAL PATHS (Updated for Flat Structure) ---
-INPUT_ROOT = Path(__file__).resolve().parent / "data" / "Input_Documents"
+INPUT_ROOT = current_dir / "Input_Documents" 
 OUTPUT_DIR = current_dir / "outputs"
 META_PATH = OUTPUT_DIR / "documents_metadata_enriched.csv"
 TEXT_PATH = OUTPUT_DIR / "documents_text.jsonl"
@@ -175,23 +175,28 @@ async def ask_ai(data: dict):
 
 @app.get("/portfolio")
 def get_portfolio_assets():
+    # If the folder doesn't exist, return empty stats
     if not INPUT_ROOT.exists():
+        print(f"DEBUG: INPUT_ROOT not found at {INPUT_ROOT}")
         return {"stats": {"properties": 0, "docs": 0}, "assets": []}
 
     assets = []
     total_docs = 0
+    
+    # Get all subdirectories (buildings)
     folders = [f for f in INPUT_ROOT.iterdir() if f.is_dir() and not f.name.startswith('.')]
     
     for idx, folder in enumerate(sorted(folders)):
-        # Calculate file count EXCLUDING metadata.json
-        files = [f for f in folder.rglob("*") if f.is_file() and f.name != "metadata.json"]
+        # Count all files inside this building folder (recursively)
+        files = [f for f in folder.rglob("*") if f.is_file() and f.name != "metadata.json" and not f.name.startswith('.')]
         file_count = len(files)
         total_docs += file_count
         
-        # Load metadata
+        # Default name and image
         name = folder.name.replace("_", " ")
         img = "https://images.unsplash.com/photo-1486406146926-c627a92ad1ab"
         
+        # Look for custom name/image in metadata.json
         meta_file = folder / "metadata.json"
         if meta_file.exists():
             try:
@@ -199,7 +204,8 @@ def get_portfolio_assets():
                     meta = json.load(f)
                     name = meta.get("name", name)
                     img = meta.get("image", img)
-            except: pass
+            except: 
+                pass
 
         assets.append({
             "id": f"asset-{idx}",
