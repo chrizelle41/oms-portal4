@@ -47,7 +47,7 @@ app.add_middleware(
 
 # --- GLOBAL PATHS ---
 # --- GLOBAL PATHS (Updated for Flat Structure) ---
-INPUT_ROOT = current_dir / "data" / "Input_Documents" 
+INPUT_ROOT = Path(__file__).resolve().parent / "data" / "Input_Documents"
 OUTPUT_DIR = current_dir / "outputs"
 META_PATH = OUTPUT_DIR / "documents_metadata_enriched.csv"
 TEXT_PATH = OUTPUT_DIR / "documents_text.jsonl"
