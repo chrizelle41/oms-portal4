@@ -15,9 +15,8 @@ from openai import AzureOpenAI
 
 # Fix pathing so 'src' is visible to FastAPI
 current_dir = Path(__file__).resolve().parent
-root = current_dir.parent
-if str(root) not in sys.path:
-    sys.path.insert(0, str(root))
+if str(current_dir) not in sys.path:
+    sys.path.insert(0, str(current_dir))
 
 # Import from src
 from src.vector_search import load_embeddings, search
@@ -47,8 +46,9 @@ app.add_middleware(
 )
 
 # --- GLOBAL PATHS ---
-INPUT_ROOT = root / "data" / "Input_Documents" 
-OUTPUT_DIR = root / "outputs"
+# --- GLOBAL PATHS (Updated for Flat Structure) ---
+INPUT_ROOT = current_dir / "data" / "Input_Documents" 
+OUTPUT_DIR = current_dir / "outputs"
 META_PATH = OUTPUT_DIR / "documents_metadata_enriched.csv"
 TEXT_PATH = OUTPUT_DIR / "documents_text.jsonl"
 ENRICHED_META = OUTPUT_DIR / "documents_metadata_enriched.csv"
