@@ -19,7 +19,7 @@ if str(current_dir) not in sys.path:
     sys.path.insert(0, str(current_dir))
 
 # Import from src
-from src.vector_search import load_embeddings, search
+from logic.vector_search import load_embeddings, search
 
 load_dotenv()
 
