@@ -23,5 +23,3 @@ Input_Documents/*
 !Input_Documents/Botanical_Place/
 !Input_Documents/metadata.json
 
-# Ignore outputs
-outputs/
