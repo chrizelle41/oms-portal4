@@ -7,7 +7,7 @@ import numpy as np
 from dotenv import load_dotenv
 from openai import AzureOpenAI  # Updated import
 
-from src.vector_search import load_embeddings, search
+from logic.vector_search import load_embeddings, search
 
 # --- PATH CONFIGURATION ---
 BASE_DIR = Path(__file__).resolve().parents[1]

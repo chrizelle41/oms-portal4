@@ -17,9 +17,8 @@ current_dir = Path(__file__).resolve().parent
 if str(current_dir) not in sys.path:
     sys.path.insert(0, str(current_dir))
 
-# Import from logic (previously src)
-from src.vector_search import load_embeddings, search
-
+# REVERTED: Importing from 'logic' folder
+from logic.vector_search import load_embeddings, search
 load_dotenv()
 
 api_key = os.getenv("OPENAI_API_KEY")
@@ -29,10 +28,7 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000", 
-        "https://oms-portal-uifinal.onrender.com" # Add your actual Render frontend URL
-    ],
+    allow_origins=["*"], # Set to "*" to ensure no connection drops during the logic transition
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
