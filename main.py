@@ -11,27 +11,19 @@ from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 from openai import OpenAI
-from openai import AzureOpenAI
 
 # Fix pathing so 'src' is visible to FastAPI
 current_dir = Path(__file__).resolve().parent
 if str(current_dir) not in sys.path:
     sys.path.insert(0, str(current_dir))
 
-# Import from src
+# Import from logic (previously src)
 from logic.vector_search import load_embeddings, search
 
 load_dotenv()
 
-# Initialize Azure OpenAI client
-client = AzureOpenAI(
-    # Ensure ENDPOINT_URL is just the base: https://suha-mf9ds212-eastus2.cognitiveservices.azure.com/
-    azure_endpoint=os.getenv("ENDPOINT_URL"), 
-    api_key=os.getenv("AZURE_OPENAI_API_KEY"),
-    api_version=os.getenv("OPENAI_API_VERSION", "2025-01-01-preview")
-)
-
-deployment_name = os.getenv("DEPLOYMENT_NAME", "gpt-5-chat")
+api_key = os.getenv("OPENAI_API_KEY")
+client = OpenAI(api_key=api_key)
 
 app = FastAPI()
 
@@ -112,14 +104,14 @@ async def ask_ai(data: dict):
         # 2. Azure-Specific Embedding Search
         # Note: Ensure you have a deployment for your embedding model in Azure
         q_emb_resp = client.embeddings.create(
-            model=os.getenv("EMBEDDING_DEPLOYMENT", "text-embedding-3-large"),
-            input=query
-        )
+                model="text-embedding-3-large",
+                input=query
+            )
         q_emb = np.array(q_emb_resp.data[0].embedding, dtype="float32")
         
         docs = load_embeddings()  
         text_map = load_text_map()
-        top = search(q_emb, docs, top_k=15) 
+        top = search(q_emb, docs, top_k=15)
 
         context_blocks = []
         
@@ -148,7 +140,7 @@ async def ask_ai(data: dict):
         # 3. Azure AI Generation 
         # model= here MUST be your deployment name (gpt-5-chat)
         response = client.chat.completions.create(
-            model=os.getenv("DEPLOYMENT_NAME", "gpt-5-chat"),
+            model="gpt-4o",
             messages=[
                 {
                     "role": "system", 
@@ -275,29 +267,30 @@ async def classify_document(
     try:
         target_dir = INPUT_ROOT / folder_name
         target_dir.mkdir(parents=True, exist_ok=True)
-        
         save_path = target_dir / file.filename
         
         with save_path.open("wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
             
-        prompt = f"Classify this O&M document filename into exactly one category: HVAC, Electrical, Fire, or Plumbing. Filename: {file.filename}"
+        # Standard OpenAI Classification
         response = client.chat.completions.create(
             model="gpt-4o",
-            messages=[{"role": "system", "content": "Return ONLY the category name: HVAC, Electrical, Fire, or Plumbing."},
-                      {"role": "user", "content": prompt}],
+            messages=[{"role": "system", "content": "Return ONLY: HVAC, Electrical, Fire, or Plumbing."},
+                      {"role": "user", "content": f"Classify: {file.filename}"}],
             temperature=0
         )
-        category = response.choices[0].message.content.strip().replace(".", "")
+        category = response.choices[0].message.content.strip()
 
+        # IMPORTANT: Return the FULL object so the frontend can show it immediately
         return {
-            "document_id": f"{folder_name}/{file.filename}",
-            "category": category,
-            "name": file.filename,
-            "status": "Verified"
+            "document_id": f"{folder_name}/{file.filename}", # This fixed the preview!
+            "filename": file.filename,                       # This fixed the blank name!
+            "system": category,
+            "document_type": "Uploaded Document",
+            "size": f"{round(save_path.stat().st_size / 1024, 1)} KB",
+            "date": pd.Timestamp.now().strftime("%Y-%m-%d")
         }
     except Exception as e:
-        print(f"Classification Error: {e}")
         return {"error": str(e)}, 500
     
 @app.get("/portfolio/{folder_name}/docs")
