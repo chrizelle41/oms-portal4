@@ -18,7 +18,7 @@ if str(current_dir) not in sys.path:
     sys.path.insert(0, str(current_dir))
 
 # Import from logic (previously src)
-from logic.vector_search import load_embeddings, search
+from src.vector_search import load_embeddings, search
 
 load_dotenv()
 
@@ -90,71 +90,74 @@ async def ask_ai(data: dict):
         return {"error": "No query provided"}
 
     try:
+        # 1. Targeted Logic for "Present" files (Maintains your exact logic)
         all_files_data = get_files() 
         priority_file = None
         clean_query = query.lower()
         
-        # Determine if the user is specifically looking for Gaps/Missing files
-        is_gap_query = any(word in clean_query for word in ["missing", "gap", "not found", "lack", "needed"])
-
         for f in all_files_data:
             fname = f['filename'].lower()
+            # If the specific filename is mentioned in the query
             if fname.replace(".pdf", "") in clean_query or clean_query in fname:
                 priority_file = f
                 break
 
+        # 2. OpenAI Embedding Search
         q_emb_resp = client.embeddings.create(
-                model="text-embedding-3-large",
-                input=query
-            )
+            model="text-embedding-3-large", # Standard OpenAI model name
+            input=query
+        )
         q_emb = np.array(q_emb_resp.data[0].embedding, dtype="float32")
         
         docs = load_embeddings()  
         text_map = load_text_map()
-        top = search(q_emb, docs, top_k=15)
+        top = search(q_emb, docs, top_k=15) 
 
         context_blocks = []
         
-        # Tagging context explicitly as "EXISTING_ON_DISK"
+        # Inject the Priority File at the top of context if found
         if priority_file:
             context_blocks.append(
-                f"STATUS: EXISTING_ON_DISK\n"
+                f"PRIORITY_TARGET_FOUND: True\n"
                 f"DISPLAY_NAME: {priority_file['filename']}\n"
+                f"SYSTEM_PATH: {priority_file['document_id']}\n"
                 f"TEXT: {text_map.get(priority_file['document_id'], '')[:1000]}"
             )
 
         for score, doc in top:
             doc_id = doc["document_id"]
+            # Avoid duplicating the priority file in the context
             if priority_file and doc_id == priority_file['document_id']:
                 continue
                 
             filename = doc_id.split('/')[-1] if '/' in doc_id else doc_id
             context_blocks.append(
-                f"STATUS: EXISTING_ON_DISK\n"
                 f"DISPLAY_NAME: {filename}\n"
+                f"SYSTEM_PATH: {doc_id}\n"
                 f"TEXT: {text_map.get(doc_id, '')[:3000]}"
             )
         
         full_context = "\n\n".join(context_blocks)
 
+        # 3. AI Generation (Using gpt-4o via Standard OpenAI Client)
         response = client.chat.completions.create(
-            model="gpt-4o",
+            model="gpt-4o", # Standard OpenAI model name
             messages=[
                 {
                     "role": "system", 
                     "content": (
-                        "You are a professional O&M Auditor. Your goal is to provide a clean audit report."
-                        "\n\nSTRICT FILTERING RULES:\n"
-                        f"USER_IS_LOOKING_FOR_GAPS: {is_gap_query}\n"
-                        "1. If USER_IS_LOOKING_FOR_GAPS is True, you MUST ONLY output cards with 'Status: Missing'. "
-                        "DO NOT mention, list, or create cards for any files tagged as 'STATUS: EXISTING_ON_DISK'.\n"
-                        "2. If the user asks 'what is here' or 'show all', you may show both.\n"
-                        "3. GAP ANALYSIS: Check for HVAC Manuals, Layouts, Commissioning, BMS, and F-Gas. If they are not in the context blocks, they are 'Missing'.\n"
-                        "4. FORMAT: Document Name | Status | Remark\n"
-                        "5. NO PROSE: Do not explain what is present if the user asked for what is missing."
+                        "You are a professional O&M Auditor. Always start with a friendly intro like 'Sure! I've analyzed the files, and here is the status...'"
+                        "\n\nSTRICT AUDIT RULES:\n"
+                        "1. TARGETED MODE: If 'PRIORITY_TARGET_FOUND' is True and the user is asking for that specific file, ONLY provide the card for that one file. Do not show related background files.\n"
+                        "2. GAP ANALYSIS: Look for all standard AC components (Manuals, Layouts, Commissioning, BMS, F-Gas). If they aren't in the context, list them as 'Missing'.\n"
+                        "3. COMPREHENSIVE: List EVERY missing item you find. Do not summarize into one card.\n"
+                        "4. FOR PRESENT DOCUMENTS: You MUST use the exact 'DISPLAY_NAME' from the context as the Document Name. This is required for the system to open the file.\n"
+                        "5. FILTERING: If the user asks for missing items, ONLY show 'Missing' cards. If asking for existing items, ONLY show 'Present' cards.\n"
+                        "6. FORMAT: Document Name | Status | Remark\n"
+                        "7. NO HEADERS: Do not include template headers like 'Document Name | Status'."
                     )
                 },
-                {"role": "user", "content": f"Query: {query}\n\nContext of existing files:\n{full_context}"}
+                {"role": "user", "content": f"Query: {query}\n\nContext:\n{full_context}"}
             ],
             temperature=0.1
         )
