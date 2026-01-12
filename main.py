@@ -17,7 +17,7 @@ current_dir = Path(__file__).resolve().parent
 if str(current_dir) not in sys.path:
     sys.path.insert(0, str(current_dir))
 
-# REVERTED: Importing from 'logic' folder
+# Importing vector search logic
 from logic.vector_search import load_embeddings, search
 load_dotenv()
 
@@ -28,14 +28,13 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # Set to "*" to ensure no connection drops during the logic transition
+    allow_origins=["*"], 
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # --- GLOBAL PATHS ---
-# --- GLOBAL PATHS (Updated for Flat Structure) ---
 INPUT_ROOT = current_dir / "Input_Documents" 
 OUTPUT_DIR = current_dir / "outputs"
 META_PATH = OUTPUT_DIR / "documents_metadata_enriched.csv"
@@ -52,18 +51,16 @@ def load_text_map():
             text_map[rec["document_id"]] = rec["text"]
     return text_map
 
+# --- FILE LISTING (FOR CHAT CONTEXT) ---
 @app.get("/files")
 def get_files():
     if not META_PATH.exists():
         return []
     
-    # 1. Scan the disk ONCE and build a lookup table
-    # This maps 'filename' -> 'relative_path'
     file_lookup = {}
     if INPUT_ROOT.exists():
         for p in INPUT_ROOT.rglob("*"):
             if p.is_file() and not p.name.startswith('.'):
-                # Store both original and compressed versions as keys
                 rel_path = str(p.relative_to(INPUT_ROOT)).replace(os.sep, "/")
                 file_lookup[p.name] = {
                     "path": rel_path,
@@ -71,16 +68,12 @@ def get_files():
                     "date": pd.Timestamp(p.stat().st_mtime, unit='s').strftime("%Y-%m-%d")
                 }
 
-    # 2. Load the CSV
     df = pd.read_csv(META_PATH)
     records = df.fillna("").to_dict(orient="records")
     
-    # 3. Match records to the lookup table
     for rec in records:
         filename = rec.get("filename")
         compressed_name = f"{Path(filename).stem}_compressed{Path(filename).suffix}"
-        
-        # Check if the filename (or compressed version) exists in our map
         match = file_lookup.get(filename) or file_lookup.get(compressed_name)
         
         if match:
@@ -93,6 +86,8 @@ def get_files():
                 rec["document_id"] = filename
 
     return records
+
+# --- CHAT & AI LOGIC ---
 @app.post("/ask")
 async def ask_ai(data: dict):
     query = (data.get("query") or "").strip()
@@ -197,30 +192,24 @@ async def ask_ai(data: dict):
     except Exception as e:
         print(f"Error in ask_ai: {e}")
         return {"error": str(e)}
+# --- PORTFOLIO & DOCUMENT MANAGEMENT ---
 @app.get("/portfolio")
 def get_portfolio_assets():
-    # If the folder doesn't exist, return empty stats
     if not INPUT_ROOT.exists():
-        print(f"DEBUG: INPUT_ROOT not found at {INPUT_ROOT}")
         return {"stats": {"properties": 0, "docs": 0}, "assets": []}
 
     assets = []
     total_docs = 0
-    
-    # Get all subdirectories (buildings)
     folders = [f for f in INPUT_ROOT.iterdir() if f.is_dir() and not f.name.startswith('.')]
     
     for idx, folder in enumerate(sorted(folders)):
-        # Count all files inside this building folder (recursively)
         files = [f for f in folder.rglob("*") if f.is_file() and f.name != "metadata.json" and not f.name.startswith('.')]
         file_count = len(files)
         total_docs += file_count
         
-        # Default name and image
         name = folder.name.replace("_", " ")
         img = "https://images.unsplash.com/photo-1486406146926-c627a92ad1ab"
         
-        # Look for custom name/image in metadata.json
         meta_file = folder / "metadata.json"
         if meta_file.exists():
             try:
@@ -228,8 +217,7 @@ def get_portfolio_assets():
                     meta = json.load(f)
                     name = meta.get("name", name)
                     img = meta.get("image", img)
-            except: 
-                pass
+            except: pass
 
         assets.append({
             "id": f"asset-{idx}",
@@ -240,90 +228,8 @@ def get_portfolio_assets():
             "img": img
         })
 
-    return {
-        "stats": {
-            "properties": len(assets),
-            "docs": total_docs
-        },
-        "assets": assets
-    }
+    return {"stats": {"properties": len(assets), "docs": total_docs}, "assets": assets}
 
-@app.get("/portfolio/{folder_name}/docs")
-def get_folder_docs(folder_name: str):
-    target_folder = INPUT_ROOT / folder_name
-    if not target_folder.exists():
-        return []
-
-    # Load the enriched database to look up metadata
-    db_df = pd.DataFrame()
-    if ENRICHED_META.exists():
-        db_df = pd.read_csv(ENRICHED_META).replace({np.nan: None}) #
-
-    docs = []
-    for file_path in target_folder.rglob("*"):
-        # Filter out metadata.json and hidden files
-        if file_path.is_file() and not file_path.name.startswith('.') and file_path.name != "metadata.json":
-            rel_path = str(file_path.relative_to(INPUT_ROOT)).replace(os.sep, "/")
-            filename = file_path.name
-            
-            # Default values if no match is found
-            category = "Uncategorized"
-            doc_type = "Document"
-            asset_hint = "None"
-            
-            # Match the file on disk to the metadata in the CSV
-            if not db_df.empty:
-                match = db_df[db_df['filename'] == filename]
-                if not match.empty:
-                    category = match.iloc[0].get('system') or "Uncategorized"
-                    doc_type = match.iloc[0].get('document_type') or "Document"
-                    asset_hint = match.iloc[0].get('asset_hint') or "None"
-
-            docs.append({
-                "id": rel_path,
-                "name": filename,
-                "cat": category, # Mapped to 'system'
-                "doc_type": doc_type, # Mapped to 'document_type'
-                "asset_hint": asset_hint,
-                "date": pd.Timestamp(file_path.stat().st_mtime, unit='s').strftime("%Y-%m-%d"),
-                "size": f"{round(file_path.stat().st_size / 1024, 1)} KB",
-                "user": "System"
-            })
-    return docs
-@app.post("/classify-document")
-async def classify_document(
-    file: UploadFile = File(...), 
-    folder_name: str = Form(...) 
-):
-    try:
-        target_dir = INPUT_ROOT / folder_name
-        target_dir.mkdir(parents=True, exist_ok=True)
-        save_path = target_dir / file.filename
-        
-        with save_path.open("wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-            
-        # Standard OpenAI Classification
-        response = client.chat.completions.create(
-            model="gpt-4o",
-            messages=[{"role": "system", "content": "Return ONLY: HVAC, Electrical, Fire, or Plumbing."},
-                      {"role": "user", "content": f"Classify: {file.filename}"}],
-            temperature=0
-        )
-        category = response.choices[0].message.content.strip()
-
-        # IMPORTANT: Return the FULL object so the frontend can show it immediately
-        return {
-            "document_id": f"{folder_name}/{file.filename}", # This fixed the preview!
-            "filename": file.filename,                       # This fixed the blank name!
-            "system": category,
-            "document_type": "Uploaded Document",
-            "size": f"{round(save_path.stat().st_size / 1024, 1)} KB",
-            "date": pd.Timestamp.now().strftime("%Y-%m-%d")
-        }
-    except Exception as e:
-        return {"error": str(e)}, 500
-    
 @app.get("/portfolio/{folder_name}/docs")
 def get_folder_docs(folder_name: str):
     target_folder = INPUT_ROOT / folder_name
@@ -335,14 +241,12 @@ def get_folder_docs(folder_name: str):
         db_df = pd.read_csv(ENRICHED_META).replace({np.nan: None})
 
     docs = []
-    for idx, file_path in enumerate(target_folder.rglob("*")):
-        if file_path.is_file() and not file_path.name.startswith('.'):
+    for file_path in target_folder.rglob("*"):
+        if file_path.is_file() and not file_path.name.startswith('.') and file_path.name != "metadata.json":
             rel_path = str(file_path.relative_to(INPUT_ROOT)).replace(os.sep, "/")
             filename = file_path.name
             
-            category = "Uncategorized"
-            doc_type = "Document"
-            asset_hint = ""
+            category, doc_type, asset_hint = "Uncategorized", "Document", ""
             
             if not db_df.empty:
                 match = db_df[db_df['filename'] == filename]
@@ -354,7 +258,6 @@ def get_folder_docs(folder_name: str):
             docs.append({
                 "id": rel_path,
                 "name": filename,
-                "lang": "EN",
                 "cat": str(category),
                 "doc_type": str(doc_type),
                 "asset_hint": str(asset_hint),
@@ -367,32 +270,55 @@ def get_folder_docs(folder_name: str):
 
 @app.get("/preview/{document_id:path}")
 async def preview_document(document_id: str):
-    # 1. Try the path exactly as requested (works for Portfolio)
     file_path = INPUT_ROOT / document_id
-    
     if file_path.exists() and file_path.is_file():
         return FileResponse(path=file_path)
 
-    # 2. If not found, check if it's a "compressed" mismatch
-    # Example: requested "Edocs/manual.pdf", but "Edocs/manual_compressed.pdf" exists
     path_obj = Path(document_id)
     compressed_name = f"{path_obj.stem}_compressed{path_obj.suffix}"
+    
+    # Fallback 1: Compressed in same folder
     compressed_path = INPUT_ROOT / path_obj.parent / compressed_name
-
     if compressed_path.exists():
         return FileResponse(path=compressed_path)
 
-    # 3. Fallback: Search all folders for the filename (Useful for CSV mismatches)
-    # This helps when the CSV only knows the filename but not the folder
-    filename_only = path_obj.name
-    for path in INPUT_ROOT.rglob(filename_only):
-        return FileResponse(path=path)
+    # Fallback 2: Global filename search
+    for p in INPUT_ROOT.rglob(path_obj.name):
+        return FileResponse(path=p)
         
-    # Check for compressed version anywhere in the root if still not found
-    for path in INPUT_ROOT.rglob(compressed_name):
-        return FileResponse(path=path)
+    for p in INPUT_ROOT.rglob(compressed_name):
+        return FileResponse(path=p)
 
     return {"error": "File not found"}, 404
+
+@app.post("/classify-document")
+async def classify_document(file: UploadFile = File(...), folder_name: str = Form(...)):
+    try:
+        target_dir = INPUT_ROOT / folder_name
+        target_dir.mkdir(parents=True, exist_ok=True)
+        save_path = target_dir / file.filename
+        
+        with save_path.open("wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+            
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[{"role": "system", "content": "Return ONLY: HVAC, Electrical, Fire, or Plumbing."},
+                      {"role": "user", "content": f"Classify: {file.filename}"}],
+            temperature=0
+        )
+        category = response.choices[0].message.content.strip()
+
+        return {
+            "document_id": f"{folder_name}/{file.filename}",
+            "filename": file.filename,
+            "system": category,
+            "document_type": "Uploaded Document",
+            "size": f"{round(save_path.stat().st_size / 1024, 1)} KB",
+            "date": pd.Timestamp.now().strftime("%Y-%m-%d")
+        }
+    except Exception as e:
+        return {"error": str(e)}, 500
 
 @app.post("/create-asset")
 async def create_asset(data: dict):
@@ -408,40 +334,30 @@ async def create_asset(data: dict):
     
     try:
         target_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Save metadata so it persists after refresh
         meta_file = target_dir / "metadata.json"
         with open(meta_file, "w") as f:
-            json.dump({
-                "name": asset_name,
-                "location": location,
-                "image": image_url
-            }, f)
-            
+            json.dump({"name": asset_name, "location": location, "image": image_url}, f)
         return {"status": "success", "folder_name": folder_name}
     except Exception as e:
         return {"error": str(e)}, 500
-    
 
-    # Endpoint to delete a specific file inside an asset folder
 @app.delete("/portfolio/{folder_name}/docs/{filename}")
 async def delete_document(folder_name: str, filename: str):
     file_path = INPUT_ROOT / folder_name / filename
     try:
         if file_path.exists():
-            file_path.unlink()  # Deletes the file
+            file_path.unlink()
             return {"status": "success", "message": f"{filename} deleted"}
         return {"error": "File not found"}, 404
     except Exception as e:
         return {"error": str(e)}, 500
 
-# Endpoint to delete an entire asset folder
 @app.delete("/portfolio/assets/{folder_name}")
 async def delete_asset_folder(folder_name: str):
     folder_path = INPUT_ROOT / folder_name
     try:
         if folder_path.exists() and folder_path.is_dir():
-            shutil.rmtree(folder_path)  # Deletes folder and all contents
+            shutil.rmtree(folder_path)
             return {"status": "success", "message": f"Asset {folder_name} deleted"}
         return {"error": "Folder not found"}, 404
     except Exception as e:
@@ -451,26 +367,17 @@ async def delete_asset_folder(folder_name: str):
 async def update_asset_metadata(folder_name: str, data: dict):
     folder_path = INPUT_ROOT / folder_name
     meta_file = folder_path / "metadata.json"
-    
     if not folder_path.exists():
         return {"error": "Asset not found"}, 404
-
     try:
-        # Load existing or create new
         metadata = {}
         if meta_file.exists():
             with open(meta_file, "r") as f:
                 metadata = json.load(f)
-        
-        # Update fields
-        if "name" in data:
-            metadata["name"] = data["name"]
-        if "image" in data:
-            metadata["image"] = data["image"]
-            
+        if "name" in data: metadata["name"] = data["name"]
+        if "image" in data: metadata["image"] = data["image"]
         with open(meta_file, "w") as f:
             json.dump(metadata, f)
-            
         return {"status": "success", "metadata": metadata}
     except Exception as e:
         return {"error": str(e)}, 500
