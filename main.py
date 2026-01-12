@@ -81,83 +81,105 @@ def get_files():
 
 @app.post("/ask")
 async def ask_ai(data: dict):
-    query = data.get("query")
-    if not query: 
+    query = (data.get("query") or "").strip()
+    if not query:
         return {"error": "No query provided"}
 
+    # --- 1) DECIDE MODE: AUDIT vs QA ---
+    q = query.lower()
+    audit_triggers = ["missing", "gap", "audit", "checklist", "status", "present", "do we have", "which documents", "availability"]
+    qa_triggers = ["spec", "specification", "what does it say", "values", "dimensions", "density", "thermal", "summarise", "extract", "details"]
+    
+    is_audit = any(k in q for k in audit_triggers)
+    is_qa = any(k in q for k in qa_triggers)
+    
+    # Default to QA if it looks like a specific question, otherwise Audit
+    mode = "qa" if is_qa else "audit"
+
     try:
-        # 1. Targeted Logic for "Present" files (Maintains your exact logic)
+        # --- 2) TARGETED FILENAME LOGIC (Your Working Logic) ---
         all_files_data = get_files() 
         priority_file = None
-        clean_query = query.lower()
-        
         for f in all_files_data:
-            fname = f['filename'].lower()
-            # If the specific filename is mentioned in the query
-            if fname.replace(".pdf", "") in clean_query or clean_query in fname:
+            fname = f.get('filename', '').lower()
+            if fname.replace(".pdf", "") in q or q in fname:
                 priority_file = f
                 break
 
-        # 2. OpenAI Embedding Search
+        # --- 3) VECTOR SEARCH ---
         q_emb_resp = client.embeddings.create(
-            model="text-embedding-3-large", # Standard OpenAI model name
+            model="text-embedding-3-large",
             input=query
         )
         q_emb = np.array(q_emb_resp.data[0].embedding, dtype="float32")
         
         docs = load_embeddings()  
         text_map = load_text_map()
-        top = search(q_emb, docs, top_k=15) 
+        top = search(q_emb, docs, top_k=12) 
 
+        # --- 4) BUILD CONTEXT ---
         context_blocks = []
         
-        # Inject the Priority File at the top of context if found
+        # Add Priority File first if found
         if priority_file:
+            p_id = priority_file['document_id']
             context_blocks.append(
                 f"PRIORITY_TARGET_FOUND: True\n"
                 f"DISPLAY_NAME: {priority_file['filename']}\n"
-                f"SYSTEM_PATH: {priority_file['document_id']}\n"
-                f"TEXT: {text_map.get(priority_file['document_id'], '')[:1000]}"
+                f"SYSTEM_PATH: {p_id}\n"
+                f"TEXT: {text_map.get(p_id, '')[:3000]}"
             )
 
         for score, doc in top:
             doc_id = doc["document_id"]
-            # Avoid duplicating the priority file in the context
             if priority_file and doc_id == priority_file['document_id']:
-                continue
+                continue # skip duplicate
                 
             filename = doc_id.split('/')[-1] if '/' in doc_id else doc_id
             context_blocks.append(
                 f"DISPLAY_NAME: {filename}\n"
                 f"SYSTEM_PATH: {doc_id}\n"
-                f"TEXT: {text_map.get(doc_id, '')[:3000]}"
+                f"TEXT: {text_map.get(doc_id, '')[:2500]}"
             )
         
-        full_context = "\n\n".join(context_blocks)
+        full_context = "\n\n---\n\n".join(context_blocks)
 
-        # 3. AI Generation (Using gpt-4o via Standard OpenAI Client)
+        # --- 5) PROMPT LOGIC ---
+        if mode == "audit":
+            system_msg = (
+                "You are a professional O&M Auditor. Always start with 'Sure! I've analyzed the files...'\n"
+                "STRICT AUDIT RULES:\n"
+                "1. Output ONLY lines in format: Document Name | Status | Remark\n"
+                "2. Status must be 'Present' or 'Missing'.\n"
+                "3. Use exact DISPLAY_NAME from context for 'Present' items.\n"
+                "4. If 'PRIORITY_TARGET_FOUND' is True and user asks for that file, only show that card.\n"
+                "5. No headers."
+            )
+        else:
+            system_msg = (
+                "You are a helpful O&M Technical Assistant.\n"
+                "The user is asking for SPECIFICATIONS or CONTENT inside the files.\n"
+                "RULES:\n"
+                "1. Give a direct, professional answer based on the TEXT in context.\n"
+                "2. Use bullet points for technical values (dimensions, materials, etc.).\n"
+                "3. ALWAYS Cite your source at the end as: Source: [DISPLAY_NAME].\n"
+                "4. Do NOT use the 'Name | Status | Remark' format here. Answer in plain paragraphs/bullets.\n"
+                "5. If the information is not in the text, say you cannot find the specific detail."
+            )
+
         response = client.chat.completions.create(
-            model="gpt-4o", # Standard OpenAI model name
+            model="gpt-4o",
             messages=[
-                {
-                    "role": "system", 
-                    "content": (
-                        "You are a professional O&M Auditor. Always start with a friendly intro like 'Sure! I've analyzed the files, and here is the status...'"
-                        "\n\nSTRICT AUDIT RULES:\n"
-                        "1. TARGETED MODE: If 'PRIORITY_TARGET_FOUND' is True and the user is asking for that specific file, ONLY provide the card for that one file. Do not show related background files.\n"
-                        "2. GAP ANALYSIS: Look for all standard AC components (Manuals, Layouts, Commissioning, BMS, F-Gas). If they aren't in the context, list them as 'Missing'.\n"
-                        "3. COMPREHENSIVE: List EVERY missing item you find. Do not summarize into one card.\n"
-                        "4. FOR PRESENT DOCUMENTS: You MUST use the exact 'DISPLAY_NAME' from the context as the Document Name. This is required for the system to open the file.\n"
-                        "5. FILTERING: If the user asks for missing items, ONLY show 'Missing' cards. If asking for existing items, ONLY show 'Present' cards.\n"
-                        "6. FORMAT: Document Name | Status | Remark\n"
-                        "7. NO HEADERS: Do not include template headers like 'Document Name | Status'."
-                    )
-                },
+                {"role": "system", "content": system_msg},
                 {"role": "user", "content": f"Query: {query}\n\nContext:\n{full_context}"}
             ],
             temperature=0.1
         )
-        return {"answer": response.choices[0].message.content}
+
+        return {
+            "mode": mode,
+            "answer": response.choices[0].message.content
+        }
 
     except Exception as e:
         print(f"Error in ask_ai: {e}")
