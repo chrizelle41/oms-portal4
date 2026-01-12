@@ -230,48 +230,7 @@ def get_portfolio_assets():
         "assets": assets
     }
 
-@app.get("/portfolio/{folder_name}/docs")
-def get_folder_docs(folder_name: str):
-    target_folder = INPUT_ROOT / folder_name
-    if not target_folder.exists():
-        return []
 
-    # Load the enriched database to look up metadata
-    db_df = pd.DataFrame()
-    if ENRICHED_META.exists():
-        db_df = pd.read_csv(ENRICHED_META).replace({np.nan: None}) #
-
-    docs = []
-    for file_path in target_folder.rglob("*"):
-        # Filter out metadata.json and hidden files
-        if file_path.is_file() and not file_path.name.startswith('.') and file_path.name != "metadata.json":
-            rel_path = str(file_path.relative_to(INPUT_ROOT)).replace(os.sep, "/")
-            filename = file_path.name
-            
-            # Default values if no match is found
-            category = "Uncategorized"
-            doc_type = "Document"
-            asset_hint = "None"
-            
-            # Match the file on disk to the metadata in the CSV
-            if not db_df.empty:
-                match = db_df[db_df['filename'] == filename]
-                if not match.empty:
-                    category = match.iloc[0].get('system') or "Uncategorized"
-                    doc_type = match.iloc[0].get('document_type') or "Document"
-                    asset_hint = match.iloc[0].get('asset_hint') or "None"
-
-            docs.append({
-                "id": rel_path,
-                "name": filename,
-                "cat": category, # Mapped to 'system'
-                "doc_type": doc_type, # Mapped to 'document_type'
-                "asset_hint": asset_hint,
-                "date": pd.Timestamp(file_path.stat().st_mtime, unit='s').strftime("%Y-%m-%d"),
-                "size": f"{round(file_path.stat().st_size / 1024, 1)} KB",
-                "user": "System"
-            })
-    return docs
 @app.post("/classify-document")
 async def classify_document(
     file: UploadFile = File(...), 
