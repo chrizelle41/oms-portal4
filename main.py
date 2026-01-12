@@ -2,6 +2,7 @@ import sys
 import os
 import json
 import shutil
+import urllib.parse
 from pathlib import Path
 
 import pandas as pd
@@ -255,12 +256,12 @@ async def classify_document(
 
         # IMPORTANT: Return the FULL object so the frontend can show it immediately
         return {
-            "document_id": f"{folder_name}/{file.filename}", # This fixed the preview!
-            "filename": file.filename,                       # This fixed the blank name!
-            "system": category,
-            "document_type": "Uploaded Document",
-            "size": f"{round(save_path.stat().st_size / 1024, 1)} KB",
-            "date": pd.Timestamp.now().strftime("%Y-%m-%d")
+        "document_id": f"{folder_name}/{file.filename}", # This fixed the preview!
+        "filename": file.filename,                       # This fixed the blank name!
+        "system": category,
+        "document_type": "Uploaded Document",
+        "size": f"{round(save_path.stat().st_size / 1024, 1)} KB",
+        "date": pd.Timestamp.now().strftime("%Y-%m-%d")
         }
     except Exception as e:
         return {"error": str(e)}, 500
@@ -308,9 +309,18 @@ def get_folder_docs(folder_name: str):
 
 @app.get("/preview/{document_id:path}")
 async def preview_document(document_id: str):
-    file_path = INPUT_ROOT / document_id
+    # IMPORTANT: Manually unquote the path to turn %2F back into /
+    # and %2C into commas, etc.
+    decoded_id = urllib.parse.unquote(document_id)
+    
+    # Now check the path relative to your Input_Documents
+    file_path = INPUT_ROOT / decoded_id
+    
+    print(f"DEBUG: Attempting to serve file at: {file_path}") # Check your logs for this!
+
     if not file_path.exists():
         return {"error": f"File not found at {file_path}"}, 404
+        
     return FileResponse(path=file_path)
 
 @app.post("/create-asset")
