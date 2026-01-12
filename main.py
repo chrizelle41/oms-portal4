@@ -85,22 +85,35 @@ async def ask_ai(data: dict):
     if not query: 
         return {"error": "No query provided"}
 
+    REQUIRED_CHECKLIST = [
+        "HVAC Operation & Maintenance Manuals", 
+        "Electrical Schematic Layouts", 
+        "Commissioning & Test Reports", 
+        "BMS Software Specifications", 
+        "F-Gas Compliance Certificates",
+        "Fire Safety Certificates",
+        "Asset Register"
+    ]
+
     try:
-        # 1. Targeted Logic for "Present" files (Maintains your exact logic)
+        # --- 1. INTENT DETECTION ---
+        q_lower = query.lower()
+        # Words that trigger the "Missing Card" logic
+        audit_triggers = ["missing", "gap", "audit", "checklist", "what is not here", "availability"]
+        is_audit_mode = any(word in q_lower for word in audit_triggers)
+
+        # --- 2. Targeted Logic for "Present" files ---
         all_files_data = get_files() 
         priority_file = None
-        clean_query = query.lower()
-        
         for f in all_files_data:
             fname = f['filename'].lower()
-            # If the specific filename is mentioned in the query
-            if fname.replace(".pdf", "") in clean_query or clean_query in fname:
+            if fname.replace(".pdf", "") in q_lower or q_lower in fname:
                 priority_file = f
                 break
 
-        # 2. OpenAI Embedding Search
+        # --- 3. OpenAI Embedding Search ---
         q_emb_resp = client.embeddings.create(
-            model="text-embedding-3-large", # Standard OpenAI model name
+            model="text-embedding-3-large", 
             input=query
         )
         q_emb = np.array(q_emb_resp.data[0].embedding, dtype="float32")
@@ -110,22 +123,18 @@ async def ask_ai(data: dict):
         top = search(q_emb, docs, top_k=15) 
 
         context_blocks = []
-        
-        # Inject the Priority File at the top of context if found
         if priority_file:
             context_blocks.append(
                 f"PRIORITY_TARGET_FOUND: True\n"
                 f"DISPLAY_NAME: {priority_file['filename']}\n"
                 f"SYSTEM_PATH: {priority_file['document_id']}\n"
-                f"TEXT: {text_map.get(priority_file['document_id'], '')[:1000]}"
+                f"TEXT: {text_map.get(priority_file['document_id'], '')[:1500]}"
             )
 
         for score, doc in top:
             doc_id = doc["document_id"]
-            # Avoid duplicating the priority file in the context
             if priority_file and doc_id == priority_file['document_id']:
                 continue
-                
             filename = doc_id.split('/')[-1] if '/' in doc_id else doc_id
             context_blocks.append(
                 f"DISPLAY_NAME: {filename}\n"
@@ -135,24 +144,32 @@ async def ask_ai(data: dict):
         
         full_context = "\n\n".join(context_blocks)
 
-        # 3. AI Generation (Using gpt-4o via Standard OpenAI Client)
+        # --- 4. AI Generation (Dual Mode) ---
+        if is_audit_mode:
+            # MODE A: Audit / Missing Cards
+            system_msg = (
+                "You are a professional O&M Auditor. The user is specifically asking for a gap analysis or missing files.\n"
+                f"REQUIRED_CHECKLIST: {', '.join(REQUIRED_CHECKLIST)}\n\n"
+                "STRICT RULES:\n"
+                "1. Compare REQUIRED_CHECKLIST against the Context. If an item is not found, list it as 'Missing'.\n"
+                "2. FORMAT: Document Name | Status | Remark\n"
+                "3. Status must be 'Present' or 'Missing'.\n"
+                "4. Use 'DISPLAY_NAME' for present items. No headers."
+            )
+        else:
+            # MODE B: Normal Q&A (Your original working behavior)
+            system_msg = (
+                "You are a helpful O&M Assistant. Answer the user's question based ONLY on the provided context.\n"
+                "1. If the user asks about specifications, values, or details, provide a clear text answer with bold terms.\n"
+                "2. If you use information from a specific file, you MUST end your response with: SOURCE_FILE: [DISPLAY_NAME]\n"
+                "3. If the user mentions a specific filename, use the PRIORITY_TARGET text first.\n"
+                "4. Do NOT use the 'Name | Status | Remark' format unless specifically asked for an audit."
+            )
+
         response = client.chat.completions.create(
-            model="gpt-4o", # Standard OpenAI model name
+            model="gpt-4o",
             messages=[
-                {
-                    "role": "system", 
-                    "content": (
-                        "You are a professional O&M Auditor. Always start with a friendly intro like 'Sure! I've analyzed the files, and here is the status...'"
-                        "\n\nSTRICT AUDIT RULES:\n"
-                        "1. TARGETED MODE: If 'PRIORITY_TARGET_FOUND' is True and the user is asking for that specific file, ONLY provide the card for that one file. Do not show related background files.\n"
-                        "2. GAP ANALYSIS: Look for all standard AC components (Manuals, Layouts, Commissioning, BMS, F-Gas). If they aren't in the context, list them as 'Missing'.\n"
-                        "3. COMPREHENSIVE: List EVERY missing item you find. Do not summarize into one card.\n"
-                        "4. FOR PRESENT DOCUMENTS: You MUST use the exact 'DISPLAY_NAME' from the context as the Document Name. This is required for the system to open the file.\n"
-                        "5. FILTERING: If the user asks for missing items, ONLY show 'Missing' cards. If asking for existing items, ONLY show 'Present' cards.\n"
-                        "6. FORMAT: Document Name | Status | Remark\n"
-                        "7. NO HEADERS: Do not include template headers like 'Document Name | Status'."
-                    )
-                },
+                {"role": "system", "content": system_msg},
                 {"role": "user", "content": f"Query: {query}\n\nContext:\n{full_context}"}
             ],
             temperature=0.1
@@ -162,7 +179,6 @@ async def ask_ai(data: dict):
     except Exception as e:
         print(f"Error in ask_ai: {e}")
         return {"error": str(e)}
-
 @app.get("/portfolio")
 def get_portfolio_assets():
     # If the folder doesn't exist, return empty stats
