@@ -12,14 +12,6 @@ dist/
 build/
 
 # --- DATA / DOCUMENTS ---
-# Since we are inside the backend folder, we remove the "backend/" prefix
-Input_Documents/Exchequers_Court/
-Input_Documents/Stirling_Square/
-Input_Documents/The_Whiteley/
-Input_Documents/Edocs/
-
-# Ignore everything in Input_Documents EXCEPT Botanical_Place
-Input_Documents/*
-!Input_Documents/Botanical_Place/
-!Input_Documents/metadata.json
-
+# We are now tracking all documents in this folder.
+# Ensure your compressed files are inside this directory.
+Input_Documents/.DS_Store
