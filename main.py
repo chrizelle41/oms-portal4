@@ -85,17 +85,6 @@ async def ask_ai(data: dict):
     if not query: 
         return {"error": "No query provided"}
 
-    # This defines the standard set of documents the AI will check for gap analysis
-    REQUIRED_CHECKLIST = [
-        "HVAC Operation & Maintenance Manuals", 
-        "Electrical Schematic Layouts", 
-        "Commissioning & Test Reports", 
-        "BMS Software Specifications", 
-        "F-Gas Compliance Certificates",
-        "Fire Safety Certificates",
-        "Asset Register"
-    ]
-
     try:
         # 1. Targeted Logic for "Present" files (Maintains your exact logic)
         all_files_data = get_files() 
@@ -111,7 +100,7 @@ async def ask_ai(data: dict):
 
         # 2. OpenAI Embedding Search
         q_emb_resp = client.embeddings.create(
-            model="text-embedding-3-large", 
+            model="text-embedding-3-large", # Standard OpenAI model name
             input=query
         )
         q_emb = np.array(q_emb_resp.data[0].embedding, dtype="float32")
@@ -133,6 +122,7 @@ async def ask_ai(data: dict):
 
         for score, doc in top:
             doc_id = doc["document_id"]
+            # Avoid duplicating the priority file in the context
             if priority_file and doc_id == priority_file['document_id']:
                 continue
                 
@@ -145,23 +135,22 @@ async def ask_ai(data: dict):
         
         full_context = "\n\n".join(context_blocks)
 
-        # 3. AI Generation
+        # 3. AI Generation (Using gpt-4o via Standard OpenAI Client)
         response = client.chat.completions.create(
-            model="gpt-4o",
+            model="gpt-4o", # Standard OpenAI model name
             messages=[
                 {
                     "role": "system", 
                     "content": (
-                        "You are a professional O&M Auditor. Always start with a friendly intro like 'Sure! I've analyzed the files, and here is the status...'\n\n"
-                        f"REQUIRED_CHECKLIST: {', '.join(REQUIRED_CHECKLIST)}\n\n"
-                        "STRICT AUDIT RULES:\n"
-                        "1. GAP ANALYSIS: You MUST compare the REQUIRED_CHECKLIST against the provided Context. If a checklist item is not present in the context text, you MUST list it as 'Missing'.\n"
-                        "2. TARGETED MODE: If 'PRIORITY_TARGET_FOUND' is True and the user is asking for that specific file, ONLY provide the card for that one file.\n"
-                        "3. COMPREHENSIVE: List EVERY missing item as an individual card. Do not group them.\n"
-                        "4. FOR PRESENT DOCUMENTS: Use the exact 'DISPLAY_NAME' from the context as the Document Name.\n"
+                        "You are a professional O&M Auditor. Always start with a friendly intro like 'Sure! I've analyzed the files, and here is the status...'"
+                        "\n\nSTRICT AUDIT RULES:\n"
+                        "1. TARGETED MODE: If 'PRIORITY_TARGET_FOUND' is True and the user is asking for that specific file, ONLY provide the card for that one file. Do not show related background files.\n"
+                        "2. GAP ANALYSIS: Look for all standard AC components (Manuals, Layouts, Commissioning, BMS, F-Gas). If they aren't in the context, list them as 'Missing'.\n"
+                        "3. COMPREHENSIVE: List EVERY missing item you find. Do not summarize into one card.\n"
+                        "4. FOR PRESENT DOCUMENTS: You MUST use the exact 'DISPLAY_NAME' from the context as the Document Name. This is required for the system to open the file.\n"
                         "5. FILTERING: If the user asks for missing items, ONLY show 'Missing' cards. If asking for existing items, ONLY show 'Present' cards.\n"
                         "6. FORMAT: Document Name | Status | Remark\n"
-                        "7. NO HEADERS: Do not include template headers or markdown tables."
+                        "7. NO HEADERS: Do not include template headers like 'Document Name | Status'."
                     )
                 },
                 {"role": "user", "content": f"Query: {query}\n\nContext:\n{full_context}"}
