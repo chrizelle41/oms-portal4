@@ -57,31 +57,38 @@ def get_files():
     if not META_PATH.exists():
         return []
     
+    # 1. Scan the disk ONCE and build a lookup table
+    # This maps 'filename' -> 'relative_path'
+    file_lookup = {}
+    if INPUT_ROOT.exists():
+        for p in INPUT_ROOT.rglob("*"):
+            if p.is_file() and not p.name.startswith('.'):
+                # Store both original and compressed versions as keys
+                rel_path = str(p.relative_to(INPUT_ROOT)).replace(os.sep, "/")
+                file_lookup[p.name] = {
+                    "path": rel_path,
+                    "size": f"{round(p.stat().st_size / 1024, 1)} KB",
+                    "date": pd.Timestamp(p.stat().st_mtime, unit='s').strftime("%Y-%m-%d")
+                }
+
+    # 2. Load the CSV
     df = pd.read_csv(META_PATH)
     records = df.fillna("").to_dict(orient="records")
     
+    # 3. Match records to the lookup table
     for rec in records:
         filename = rec.get("filename")
-        # Try to find where this file actually lives now
-        actual_file = None
-        
-        # Search for exact filename or the compressed version
         compressed_name = f"{Path(filename).stem}_compressed{Path(filename).suffix}"
         
-        for p in INPUT_ROOT.rglob("*"):
-            if p.name == filename or p.name == compressed_name:
-                actual_file = p
-                break
+        # Check if the filename (or compressed version) exists in our map
+        match = file_lookup.get(filename) or file_lookup.get(compressed_name)
         
-        if actual_file:
-            # IMPORTANT: Update the document_id to the REAL path on disk
-            # This is what the Preview Drawer uses
-            rec["document_id"] = str(actual_file.relative_to(INPUT_ROOT)).replace(os.sep, "/")
-            rec["size"] = f"{round(actual_file.stat().st_size / 1024, 1)} KB"
-            rec["date"] = pd.Timestamp(actual_file.stat().st_mtime, unit='s').strftime("%Y-%m-%d")
+        if match:
+            rec["document_id"] = match["path"]
+            rec["size"] = match["size"]
+            rec["date"] = match["date"]
         else:
             rec["size"] = "N/A"
-            # Keep the filename as ID as a last resort
             if not rec.get("document_id"):
                 rec["document_id"] = filename
 
@@ -243,7 +250,48 @@ def get_portfolio_assets():
         "assets": assets
     }
 
+@app.get("/portfolio/{folder_name}/docs")
+def get_folder_docs(folder_name: str):
+    target_folder = INPUT_ROOT / folder_name
+    if not target_folder.exists():
+        return []
 
+    # Load the enriched database to look up metadata
+    db_df = pd.DataFrame()
+    if ENRICHED_META.exists():
+        db_df = pd.read_csv(ENRICHED_META).replace({np.nan: None}) #
+
+    docs = []
+    for file_path in target_folder.rglob("*"):
+        # Filter out metadata.json and hidden files
+        if file_path.is_file() and not file_path.name.startswith('.') and file_path.name != "metadata.json":
+            rel_path = str(file_path.relative_to(INPUT_ROOT)).replace(os.sep, "/")
+            filename = file_path.name
+            
+            # Default values if no match is found
+            category = "Uncategorized"
+            doc_type = "Document"
+            asset_hint = "None"
+            
+            # Match the file on disk to the metadata in the CSV
+            if not db_df.empty:
+                match = db_df[db_df['filename'] == filename]
+                if not match.empty:
+                    category = match.iloc[0].get('system') or "Uncategorized"
+                    doc_type = match.iloc[0].get('document_type') or "Document"
+                    asset_hint = match.iloc[0].get('asset_hint') or "None"
+
+            docs.append({
+                "id": rel_path,
+                "name": filename,
+                "cat": category, # Mapped to 'system'
+                "doc_type": doc_type, # Mapped to 'document_type'
+                "asset_hint": asset_hint,
+                "date": pd.Timestamp(file_path.stat().st_mtime, unit='s').strftime("%Y-%m-%d"),
+                "size": f"{round(file_path.stat().st_size / 1024, 1)} KB",
+                "user": "System"
+            })
+    return docs
 @app.post("/classify-document")
 async def classify_document(
     file: UploadFile = File(...), 
