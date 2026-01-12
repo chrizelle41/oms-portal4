@@ -107,7 +107,6 @@ async def ask_ai(data: dict):
     is_audit = any(k in q for k in audit_triggers)
     is_qa = any(k in q for k in qa_triggers)
     
-    # Default to QA if it looks like a specific question, otherwise Audit
     mode = "qa" if is_qa else "audit"
 
     try:
@@ -134,7 +133,6 @@ async def ask_ai(data: dict):
         # --- 4) BUILD CONTEXT ---
         context_blocks = []
         
-        # Add Priority File first if found
         if priority_file:
             p_id = priority_file['document_id']
             context_blocks.append(
@@ -147,7 +145,7 @@ async def ask_ai(data: dict):
         for score, doc in top:
             doc_id = doc["document_id"]
             if priority_file and doc_id == priority_file['document_id']:
-                continue # skip duplicate
+                continue 
                 
             filename = doc_id.split('/')[-1] if '/' in doc_id else doc_id
             context_blocks.append(
@@ -158,7 +156,7 @@ async def ask_ai(data: dict):
         
         full_context = "\n\n---\n\n".join(context_blocks)
 
-        # --- 5) PROMPT LOGIC ---
+        # --- 5) PROMPT LOGIC (DESIGN EDITS ONLY) ---
         if mode == "audit":
             system_msg = (
                 "You are a professional O&M Auditor. Always start with 'Sure! I've analyzed the files...'\n"
@@ -172,13 +170,14 @@ async def ask_ai(data: dict):
         else:
             system_msg = (
                 "You are a helpful O&M Technical Assistant.\n"
-                "The user is asking for SPECIFICATIONS or CONTENT inside the files.\n"
-                "RULES:\n"
-                "1. Give a direct, professional answer based on the TEXT in context.\n"
-                "2. Use bullet points for technical values (dimensions, materials, etc.).\n"
-                "3. ALWAYS Cite your source at the end as: Source: [DISPLAY_NAME].\n"
-                "4. Do NOT use the 'Name | Status | Remark' format here. Answer in plain paragraphs/bullets.\n"
-                "5. If the information is not in the text, say you cannot find the specific detail."
+                "The user is asking for SPECIFICATIONS or CONTENT.\n"
+                "STRICT DESIGN RULES:\n"
+                "1. Use **bold** for key terms and properties.\n"
+                "2. Use standard Markdown bullet points (e.g., '- Property Name: Value').\n"
+                "3. Structure your response with clear spacing so it is easy to read.\n"
+                "4. AT THE END of your answer, if a document was used, provide the source EXACTLY as:\n"
+                "SOURCE_FILE: [DISPLAY_NAME]\n"
+                "5. Do NOT use the Table format (Name | Status | Remark) in this mode."
             )
 
         response = client.chat.completions.create(
@@ -198,7 +197,6 @@ async def ask_ai(data: dict):
     except Exception as e:
         print(f"Error in ask_ai: {e}")
         return {"error": str(e)}
-
 @app.get("/portfolio")
 def get_portfolio_assets():
     # If the folder doesn't exist, return empty stats
