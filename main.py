@@ -54,149 +54,115 @@ def load_text_map():
 
 @app.get("/files")
 def get_files():
+    """
+    Returns all files merged with their physical disk metadata (like size)
+    to ensure the Preview Drawer always has accurate information.
+    """
     if not META_PATH.exists():
         return []
     
-    # 1. Scan the disk ONCE and build a lookup table
-    # This maps 'filename' -> 'relative_path'
-    file_lookup = {}
-    if INPUT_ROOT.exists():
-        for p in INPUT_ROOT.rglob("*"):
-            if p.is_file() and not p.name.startswith('.'):
-                # Store both original and compressed versions as keys
-                rel_path = str(p.relative_to(INPUT_ROOT)).replace(os.sep, "/")
-                file_lookup[p.name] = {
-                    "path": rel_path,
-                    "size": f"{round(p.stat().st_size / 1024, 1)} KB",
-                    "date": pd.Timestamp(p.stat().st_mtime, unit='s').strftime("%Y-%m-%d")
-                }
-
-    # 2. Load the CSV
     df = pd.read_csv(META_PATH)
     records = df.fillna("").to_dict(orient="records")
     
-    # 3. Match records to the lookup table
+    # Enrich records with physical file size if missing
     for rec in records:
-        filename = rec.get("filename")
-        compressed_name = f"{Path(filename).stem}_compressed{Path(filename).suffix}"
-        
-        # Check if the filename (or compressed version) exists in our map
-        match = file_lookup.get(filename) or file_lookup.get(compressed_name)
-        
-        if match:
-            rec["document_id"] = match["path"]
-            rec["size"] = match["size"]
-            rec["date"] = match["date"]
-        else:
-            rec["size"] = "N/A"
-            if not rec.get("document_id"):
-                rec["document_id"] = filename
-
+        file_id = rec.get("document_id")
+        if file_id:
+            file_path = INPUT_ROOT / file_id
+            if file_path.exists():
+                # Ensure 'size' is populated for AllFilesPage and Chat Preview
+                rec["size"] = f"{round(file_path.stat().st_size / 1024, 1)} KB"
+                # Ensure 'date' is consistent
+                rec["date"] = pd.Timestamp(file_path.stat().st_mtime, unit='s').strftime("%Y-%m-%d")
+            else:
+                rec["size"] = "N/A"
+    
     return records
+
 @app.post("/ask")
 async def ask_ai(data: dict):
-    query = (data.get("query") or "").strip()
-    if not query:
+    query = data.get("query")
+    if not query: 
         return {"error": "No query provided"}
 
-    # --- 1) DECIDE MODE: AUDIT vs QA ---
-    q = query.lower()
-    audit_triggers = ["missing", "gap", "audit", "checklist", "status", "present", "do we have", "which documents", "availability"]
-    qa_triggers = ["spec", "specification", "what does it say", "values", "dimensions", "density", "thermal", "summarise", "extract", "details"]
-    
-    is_audit = any(k in q for k in audit_triggers)
-    is_qa = any(k in q for k in qa_triggers)
-    
-    mode = "qa" if is_qa else "audit"
-
     try:
-        # --- 2) TARGETED FILENAME LOGIC (Your Working Logic) ---
+        # 1. Targeted Logic for "Present" files (Maintains your exact logic)
         all_files_data = get_files() 
         priority_file = None
+        clean_query = query.lower()
+        
         for f in all_files_data:
-            fname = f.get('filename', '').lower()
-            if fname.replace(".pdf", "") in q or q in fname:
+            fname = f['filename'].lower()
+            # If the specific filename is mentioned in the query
+            if fname.replace(".pdf", "") in clean_query or clean_query in fname:
                 priority_file = f
                 break
 
-        # --- 3) VECTOR SEARCH ---
+        # 2. OpenAI Embedding Search
         q_emb_resp = client.embeddings.create(
-            model="text-embedding-3-large",
+            model="text-embedding-3-large", # Standard OpenAI model name
             input=query
         )
         q_emb = np.array(q_emb_resp.data[0].embedding, dtype="float32")
         
         docs = load_embeddings()  
         text_map = load_text_map()
-        top = search(q_emb, docs, top_k=12) 
+        top = search(q_emb, docs, top_k=15) 
 
-        # --- 4) BUILD CONTEXT ---
         context_blocks = []
         
+        # Inject the Priority File at the top of context if found
         if priority_file:
-            p_id = priority_file['document_id']
             context_blocks.append(
                 f"PRIORITY_TARGET_FOUND: True\n"
                 f"DISPLAY_NAME: {priority_file['filename']}\n"
-                f"SYSTEM_PATH: {p_id}\n"
-                f"TEXT: {text_map.get(p_id, '')[:3000]}"
+                f"SYSTEM_PATH: {priority_file['document_id']}\n"
+                f"TEXT: {text_map.get(priority_file['document_id'], '')[:1000]}"
             )
 
         for score, doc in top:
             doc_id = doc["document_id"]
+            # Avoid duplicating the priority file in the context
             if priority_file and doc_id == priority_file['document_id']:
-                continue 
+                continue
                 
             filename = doc_id.split('/')[-1] if '/' in doc_id else doc_id
             context_blocks.append(
                 f"DISPLAY_NAME: {filename}\n"
                 f"SYSTEM_PATH: {doc_id}\n"
-                f"TEXT: {text_map.get(doc_id, '')[:2500]}"
+                f"TEXT: {text_map.get(doc_id, '')[:3000]}"
             )
         
-        full_context = "\n\n---\n\n".join(context_blocks)
+        full_context = "\n\n".join(context_blocks)
 
-        # --- 5) PROMPT LOGIC (DESIGN EDITS ONLY) ---
-        if mode == "audit":
-            system_msg = (
-                "You are a professional O&M Auditor. Always start with 'Sure! I've analyzed the files...'\n"
-                "STRICT AUDIT RULES:\n"
-                "1. Output ONLY lines in format: Document Name | Status | Remark\n"
-                "2. Status must be 'Present' or 'Missing'.\n"
-                "3. Use exact DISPLAY_NAME from context for 'Present' items.\n"
-                "4. If 'PRIORITY_TARGET_FOUND' is True and user asks for that file, only show that card.\n"
-                "5. No headers."
-            )
-        else:
-            system_msg = (
-                "You are a helpful O&M Technical Assistant.\n"
-                "The user is asking for SPECIFICATIONS or CONTENT.\n"
-                "STRICT DESIGN RULES:\n"
-                "1. Use **bold** for key terms and properties.\n"
-                "2. Use standard Markdown bullet points (e.g., '- Property Name: Value').\n"
-                "3. Structure your response with clear spacing so it is easy to read.\n"
-                "4. AT THE END of your answer, if a document was used, provide the source EXACTLY as:\n"
-                "SOURCE_FILE: [DISPLAY_NAME]\n"
-                "5. Do NOT use the Table format (Name | Status | Remark) in this mode."
-            )
-
+        # 3. AI Generation (Using gpt-4o via Standard OpenAI Client)
         response = client.chat.completions.create(
-            model="gpt-4o",
+            model="gpt-4o", # Standard OpenAI model name
             messages=[
-                {"role": "system", "content": system_msg},
+                {
+                    "role": "system", 
+                    "content": (
+                        "You are a professional O&M Auditor. Always start with a friendly intro like 'Sure! I've analyzed the files, and here is the status...'"
+                        "\n\nSTRICT AUDIT RULES:\n"
+                        "1. TARGETED MODE: If 'PRIORITY_TARGET_FOUND' is True and the user is asking for that specific file, ONLY provide the card for that one file. Do not show related background files.\n"
+                        "2. GAP ANALYSIS: Look for all standard AC components (Manuals, Layouts, Commissioning, BMS, F-Gas). If they aren't in the context, list them as 'Missing'.\n"
+                        "3. COMPREHENSIVE: List EVERY missing item you find. Do not summarize into one card.\n"
+                        "4. FOR PRESENT DOCUMENTS: You MUST use the exact 'DISPLAY_NAME' from the context as the Document Name. This is required for the system to open the file.\n"
+                        "5. FILTERING: If the user asks for missing items, ONLY show 'Missing' cards. If asking for existing items, ONLY show 'Present' cards.\n"
+                        "6. FORMAT: Document Name | Status | Remark\n"
+                        "7. NO HEADERS: Do not include template headers like 'Document Name | Status'."
+                    )
+                },
                 {"role": "user", "content": f"Query: {query}\n\nContext:\n{full_context}"}
             ],
             temperature=0.1
         )
-
-        return {
-            "mode": mode,
-            "answer": response.choices[0].message.content
-        }
+        return {"answer": response.choices[0].message.content}
 
     except Exception as e:
         print(f"Error in ask_ai: {e}")
         return {"error": str(e)}
+
 @app.get("/portfolio")
 def get_portfolio_assets():
     # If the folder doesn't exist, return empty stats
@@ -367,32 +333,10 @@ def get_folder_docs(folder_name: str):
 
 @app.get("/preview/{document_id:path}")
 async def preview_document(document_id: str):
-    # 1. Try the path exactly as requested (works for Portfolio)
     file_path = INPUT_ROOT / document_id
-    
-    if file_path.exists() and file_path.is_file():
-        return FileResponse(path=file_path)
-
-    # 2. If not found, check if it's a "compressed" mismatch
-    # Example: requested "Edocs/manual.pdf", but "Edocs/manual_compressed.pdf" exists
-    path_obj = Path(document_id)
-    compressed_name = f"{path_obj.stem}_compressed{path_obj.suffix}"
-    compressed_path = INPUT_ROOT / path_obj.parent / compressed_name
-
-    if compressed_path.exists():
-        return FileResponse(path=compressed_path)
-
-    # 3. Fallback: Search all folders for the filename (Useful for CSV mismatches)
-    # This helps when the CSV only knows the filename but not the folder
-    filename_only = path_obj.name
-    for path in INPUT_ROOT.rglob(filename_only):
-        return FileResponse(path=path)
-        
-    # Check for compressed version anywhere in the root if still not found
-    for path in INPUT_ROOT.rglob(compressed_name):
-        return FileResponse(path=path)
-
-    return {"error": "File not found"}, 404
+    if not file_path.exists():
+        return {"error": f"File not found at {file_path}"}, 404
+    return FileResponse(path=file_path)
 
 @app.post("/create-asset")
 async def create_asset(data: dict):
