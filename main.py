@@ -13,6 +13,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
 from openai import OpenAI
+from fastapi.staticfiles import StaticFiles
+
 
 # Fix pathing so 'src' is visible to FastAPI
 current_dir = Path(__file__).resolve().parent
@@ -42,6 +44,9 @@ app.add_middleware(
     allow_headers=["*"],
     expose_headers=["*"] # This helps the browser see the response
 )
+
+# --- ADD THIS AFTER CORS MIDDLEWARE ---
+app.mount("/direct_preview", StaticFiles(directory=str(INPUT_ROOT)), name="direct_preview")
 
 # --- MODELS ---
 class LoginRequest(BaseModel):
@@ -341,19 +346,22 @@ def get_folder_docs(folder_name: str):
 
 @app.get("/preview/{document_id:path}")
 async def preview_document(document_id: str):
-    # IMPORTANT: Manually unquote the path to turn %2F back into /
-    # and %2C into commas, etc.
     decoded_id = urllib.parse.unquote(document_id)
+    file_path = (INPUT_ROOT / decoded_id).resolve()
     
-    # Now check the path relative to your Input_Documents
-    file_path = INPUT_ROOT / decoded_id
-    
-    print(f"DEBUG: Attempting to serve file at: {file_path}") # Check your logs for this!
-
     if not file_path.exists():
-        return {"error": f"File not found at {file_path}"}, 404
+        print(f"ERROR: File not found at {file_path}")
+        raise HTTPException(status_code=404, detail="File not found")
         
-    return FileResponse(path=file_path)
+    return FileResponse(
+        path=file_path,
+        media_type='application/pdf',
+        headers={
+            "Content-Disposition": "inline", # Forces browser to view inside iframe
+            "X-Frame-Options": "ALLOWALL",    # Allows iframe loading
+            "Access-Control-Allow-Origin": "*"
+        }
+    )
 
 @app.post("/create-asset")
 async def create_asset(data: dict):
