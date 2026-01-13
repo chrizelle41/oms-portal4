@@ -7,9 +7,10 @@ from pathlib import Path
 
 import pandas as pd
 import numpy as np
-from fastapi import FastAPI, UploadFile, File, Form
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 from dotenv import load_dotenv
 from openai import OpenAI
 
@@ -35,6 +36,36 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# --- MODELS ---
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+    # --- LOGIN ENDPOINT ---
+# --- 1. FIXED LOGIN ENDPOINT ---
+@app.post("/login")
+async def login(data: LoginRequest):
+    # This pulls from Render's 'Environment' variables
+    SECRET_PASSWORD = os.getenv("DEMO_PASSWORD", "Virtual2026!")
+    
+    email_lower = data.email.lower()
+    if not email_lower.endswith("@virtualviewing.com"):
+        raise HTTPException(
+            status_code=403, 
+            detail="Access restricted to @virtualviewing.com users."
+        )
+
+    if data.password != SECRET_PASSWORD:
+        raise HTTPException(
+            status_code=401, 
+            detail="Invalid password."
+        )
+
+    return {
+        "status": "success",
+        "user": {"email": data.email, "role": "admin"},
+        "token": "demo-session-token"
+    }
 # --- GLOBAL PATHS ---
 # --- GLOBAL PATHS (Updated for Flat Structure) ---
 INPUT_ROOT = current_dir / "Input_Documents" 
@@ -256,9 +287,9 @@ async def classify_document(
 
         # IMPORTANT: Return the FULL object so the frontend can show it immediately
         return {
-        "document_id": f"{folder_name}/{file.filename}", # This fixed the preview!
+        "id": f"{folder_name}/{file.filename}", # This fixed the preview!
         "filename": file.filename,                       # This fixed the blank name!
-        "system": category,
+        "cat": category,
         "document_type": "Uploaded Document",
         "size": f"{round(save_path.stat().st_size / 1024, 1)} KB",
         "date": pd.Timestamp.now().strftime("%Y-%m-%d")
