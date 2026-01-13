@@ -28,12 +28,19 @@ client = OpenAI(api_key=api_key)
 
 app = FastAPI()
 
+origins = [
+    "http://localhost:5173",
+    "http://localhost:3000",
+    "https://oms-portal-uifinal.onrender.com",
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # Set to "*" to ensure no connection drops during the logic transition
+    allow_origins=origins,  # Use the specific list instead of just "*"
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"] # This helps the browser see the response
 )
 
 # --- MODELS ---
