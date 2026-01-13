@@ -196,7 +196,7 @@ async def ask_ai(data: dict):
                 "2. FORMAT: Document Name | Status | Remark\n"
                 "3. Status must be 'Present' or 'Missing'.\n"
                 # FIXED: Instruction to use SYSTEM_PATH for the link to work
-                "4. For present items, use the exact SYSTEM_PATH as the Document Name. No headers."
+                "4. For present items, the 'Remark' MUST be the exact SYSTEM_PATH from the context. No headers."
             )
         else:
             # MODE B: Normal Q&A
