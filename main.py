@@ -140,7 +140,6 @@ async def ask_ai(data: dict):
     try:
         # --- 1. INTENT DETECTION ---
         q_lower = query.lower()
-        # Words that trigger the "Missing Card" logic
         audit_triggers = ["missing", "gap", "audit", "checklist", "what is not here", "availability"]
         is_audit_mode = any(word in q_lower for word in audit_triggers)
 
@@ -196,14 +195,16 @@ async def ask_ai(data: dict):
                 "1. Compare REQUIRED_CHECKLIST against the Context. If an item is not found, list it as 'Missing'.\n"
                 "2. FORMAT: Document Name | Status | Remark\n"
                 "3. Status must be 'Present' or 'Missing'.\n"
-                "4. Use 'DISPLAY_NAME' for present items. No headers."
+                # FIXED: Instruction to use SYSTEM_PATH for the link to work
+                "4. For present items, use the exact SYSTEM_PATH as the Document Name. No headers."
             )
         else:
-            # MODE B: Normal Q&A (Your original working behavior)
+            # MODE B: Normal Q&A
             system_msg = (
                 "You are a helpful O&M Assistant. Answer the user's question based ONLY on the provided context.\n"
                 "1. If the user asks about specifications, values, or details, provide a clear text answer with bold terms.\n"
-                "2. If you use information from a specific file, you MUST end your response with: SOURCE_FILE: [DISPLAY_NAME]\n"
+                # FIXED: Instructing AI to use SYSTEM_PATH so the preview doesn't load endlessly
+                "2. If you use information from a specific file, you MUST end your response with: SOURCE_FILE: [SYSTEM_PATH]\n"
                 "3. If the user mentions a specific filename, use the PRIORITY_TARGET text first.\n"
                 "4. Do NOT use the 'Name | Status | Remark' format unless specifically asked for an audit."
             )
