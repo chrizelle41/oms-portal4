@@ -86,29 +86,24 @@ def load_text_map():
 
 @app.get("/files")
 def get_files():
-    """
-    Returns all files merged with their physical disk metadata (like size)
-    to ensure the Preview Drawer always has accurate information.
-    """
     if not META_PATH.exists():
         return []
     
     df = pd.read_csv(META_PATH)
     records = df.fillna("").to_dict(orient="records")
     
-    # Enrich records with physical file size if missing
     for rec in records:
+        # Use document_id to find the file on disk
         file_id = rec.get("document_id")
         if file_id:
             file_path = INPUT_ROOT / file_id
             if file_path.exists():
-                # Ensure 'size' is populated for AllFilesPage and Chat Preview
+                # FRONTEND EXPECTS: 'filename', 'size', 'system'
+                rec["filename"] = file_id.split('/')[-1] # Ensure filename is present
                 rec["size"] = f"{round(file_path.stat().st_size / 1024, 1)} KB"
-                # Ensure 'date' is consistent
                 rec["date"] = pd.Timestamp(file_path.stat().st_mtime, unit='s').strftime("%Y-%m-%d")
             else:
                 rec["size"] = "N/A"
-    
     return records
 
 @app.post("/ask")
@@ -308,33 +303,32 @@ def get_folder_docs(folder_name: str):
         db_df = pd.read_csv(ENRICHED_META).replace({np.nan: None})
 
     docs = []
-    for idx, file_path in enumerate(target_folder.rglob("*")):
-        if file_path.is_file() and not file_path.name.startswith('.'):
+    for file_path in target_folder.rglob("*"):
+        if file_path.is_file() and not file_path.name.startswith('.') and file_path.name != "metadata.json":
+            # This 'rel_path' must match the document_id in your system
             rel_path = str(file_path.relative_to(INPUT_ROOT)).replace(os.sep, "/")
             filename = file_path.name
             
+            # Match metadata from CSV
             category = "Uncategorized"
             doc_type = "Document"
-            asset_hint = ""
-            
             if not db_df.empty:
-                match = db_df[db_df['filename'] == filename]
+                match = db_df[db_df['document_id'] == rel_path]
                 if not match.empty:
                     category = match.iloc[0].get('system') or "Uncategorized"
                     doc_type = match.iloc[0].get('document_type') or "Document"
-                    asset_hint = match.iloc[0].get('asset_hint') or ""
 
             docs.append({
+                "document_id": rel_path, # App.jsx uses this for preview
                 "id": rel_path,
+                "filename": filename,    # App.jsx uses this for titles
                 "name": filename,
-                "lang": "EN",
-                "cat": str(category),
-                "doc_type": str(doc_type),
-                "asset_hint": str(asset_hint),
+                "system": category,      # App.jsx uses 'system' for categories
+                "cat": category,
+                "doc_type": doc_type,
                 "status": "Verified" if category != "Uncategorized" else "Processing",
                 "date": pd.Timestamp(file_path.stat().st_mtime, unit='s').strftime("%Y-%m-%d"),
                 "size": f"{round(file_path.stat().st_size / 1024, 1)} KB",
-                "user": "System"
             })
     return docs
 
