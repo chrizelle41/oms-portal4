@@ -21,6 +21,16 @@ current_dir = Path(__file__).resolve().parent
 if str(current_dir) not in sys.path:
     sys.path.insert(0, str(current_dir))
 
+# --- GLOBAL PATHS ---
+# --- GLOBAL PATHS (Updated for Flat Structure) ---
+INPUT_ROOT = current_dir / "Input_Documents" 
+OUTPUT_DIR = current_dir / "outputs"
+META_PATH = OUTPUT_DIR / "documents_metadata_enriched.csv"
+TEXT_PATH = OUTPUT_DIR / "documents_text.jsonl"
+ENRICHED_META = OUTPUT_DIR / "documents_metadata_enriched.csv"
+INPUT_ROOT.mkdir(parents=True, exist_ok=True)
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
 # REVERTED: Importing from 'logic' folder
 from logic.vector_search import load_embeddings, search
 load_dotenv()
@@ -78,13 +88,6 @@ async def login(data: LoginRequest):
         "user": {"email": data.email, "role": "admin"},
         "token": "demo-session-token"
     }
-# --- GLOBAL PATHS ---
-# --- GLOBAL PATHS (Updated for Flat Structure) ---
-INPUT_ROOT = current_dir / "Input_Documents" 
-OUTPUT_DIR = current_dir / "outputs"
-META_PATH = OUTPUT_DIR / "documents_metadata_enriched.csv"
-TEXT_PATH = OUTPUT_DIR / "documents_text.jsonl"
-ENRICHED_META = OUTPUT_DIR / "documents_metadata_enriched.csv"
 
 def load_text_map():
     text_map = {}
